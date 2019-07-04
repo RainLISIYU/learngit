@@ -1,87 +1,28 @@
-import re
-import queue
-import itertools
-import lxml.html as lxml
-from urllib import parse, robotparser
-
-import refactor.diskcache as diskcache
-import refactor.downloader as downloader
+import json
+import os
+import hashlib
 
 
-def get_links(html):
-    dom = lxml.fromstring(html)
-    return map(lambda a: a.get("href"), dom.cssselect("a"))
+class DiskCache:
+    def __init__(self, cache_dir="cache"):
+        self.cache_dir = cache_dir
 
+    def url_to_path(self, url):
+        filename = hashlib.sha256(bytes(url, "utf8")).hexdigest()
+        return os.path.join(self.cache_dir, filename)
 
-def parse_robots(robots_url):
-    print(f"robots url {robots_url}")
+    def __getitem__(self, url):
+        path = self.url_to_path(url)
+        if os.path.exists(path):
+            with open (path, "r", encoding="utf8") as file:
+                return json.load(file)
+        else:
+            raise KeyError(f"{url} do not exist")
 
-    try:
-        rp = robotparser.RobotFileParser(robots_url)
-        rp.read()
-        return rp
-    except Exception as e:
-        print(f"robots parse error {e}")
+    def __setitem__(self, url, result):
+        if os.path.exists(self.cache_dir):
+            os.mkdir(self.cache_dir)
 
-
-def link_crawler(
-        start_url, link_regex, delay=5, robots_url_suffix="robots.txt",
-        user_agent="wswp", max_depth=5, scrape_callback=None, num_retries=3,
-        cache = {},
-    ):
-    seen = {}
-    crawler_queue = queue.Queue()
-    crawler_queue.put(start_url)
-
-    headers = {"User-Agent": user_agent}
-
-    D = downloader.Downloader(headers, delay=delay, cache=cache)
-
-    protocol, domain, *_ = parse.urlsplit(start_url)
-    robots_url = parse.urlunsplit((protocol, domain, robots_url_suffix, "", ""))
-    rp = parse_robots(robots_url)
-
-    while not crawler_queue.empty():
-        url = crawler_queue.get()
-
-        if rp and not rp.can_fetch(user_agent, url):
-            print(f"blocked by robots.txt {url}")
-            continue
-
-        html = D(url, num_retries)
-        if not html:
-            continue
-
-        links = []
-        if scrape_callback:
-            scrape_callback(url, html) or links
-
-        depth = seen.get(url, 0)
-        if depth == max_depth:
-            print(f"touch max depth {url}")
-            continue
-
-        for link in itertools.chain(get_links(html), links):
-            if link and re.match(link_regex, link):
-                abs_link = parse.urljoin(url, link)
-                if abs_link not in seen:
-                    crawler_queue.put(abs_link)
-                    seen[abs_link] = depth + 1
-
-
-def callback(url=None, html=None):
-    dom = lxml.fromstring(html)
-    # with open("top-500-websites.txt", "a+", encoding="utf8") as file:
-    for e in dom.cssselect(".righttxt span"):
-        # file.write(f"http://{e.text_content()}\n")
-        print(e.text_content())
-
-
-if __name__ == "__main__":
-    url = "https://alexa.chinaz.com/Country/index_CN.html"
-    link_regex = r"index_CN_"
-    # url = "https://movie.douban.com/subject/26931786/comments?status=P"
-    # link_regex = ""
-    link_crawler(
-        url, link_regex, scrape_callback=callback,cache=diskcache.DiskCache(),
-    )
+        path = self.url_to_path(url)
+        with open(path, "w", encoding="utf8") as file:
+            json.dump(result, file)
